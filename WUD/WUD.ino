@@ -1,3 +1,4 @@
+// Include the necessary libraries
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include "RTClib.h"
@@ -7,86 +8,101 @@
 #include "I2Cdev.h"
 #include "MPU6050.h"
 
-// Define the LCD Display (assuming it's connected via I2C)
+// Define LCD and rotary encoder
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-
-// Define the Rotary Encoder pins (CLK, DT)
 int CLK = 2;
 int DT = 3;
-
 int currentStateCLK;
 int previousStateCLK;
 
+// Define real-time clock
 RTC_DS3231 rtc;
 DateTime now;
 
-#define DHTPIN 4     // what digital pin the DHT11 is connected to
+// Define DHT11 temperature and humidity sensor
+#define DHTPIN 4     
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
 
-// Pins for HC-SR04
+// Define HC-SR04 distance sensor
 #define TRIG_PIN 5
 #define ECHO_PIN 6
 
 // Variable to track which screen to display
-int displayScreen = 0;  // 0 = date/time, 1 = temp/humidity, 2 = distance, 3 = GPS, 4 = Acceleration
+// 0 = date/time, 1 = temp/humidity, 2 = distance, 3 = GPS, 4 = Acceleration
+int displayScreen = 0;
 
+// Variable to hold last update time
+unsigned long lastUpdateTime = 0;
 
-// SoftwareSerial for GPS
+// Define GPS module
 SoftwareSerial ss(8, 9); // RX, TX
-
-// The TinyGPS++ object
 TinyGPSPlus gps;
 
-// MPU6050 Accelerometer/Gyroscope
+// Define MPU6050 Accelerometer/Gyroscope
 MPU6050 accelgyro(0x69); // I2C address set to 0x69
-
 int16_t ax, ay, az;
 float mpsAx, mpsAy, mpsAz;
 float sumAx = 0, sumAy = 0, sumAz = 0;
 int samples = 0;
 
 void setup() {
-  // Start the serial communication
+  // Start the serial communication for debugging
   Serial.begin(9600);
+  Serial.println("Starting serial communication...");
 
   // Start the software serial for GPS
   ss.begin(9600);
+  Serial.println("Starting software serial for GPS...");
 
   // Set up the LCD Display
   lcd.init();
   lcd.backlight();
   lcd.setCursor(0, 0);
+  Serial.println("LCD Display setup done...");
 
   // Set up the Rotary Encoder
-  pinMode(CLK, INPUT);
-  pinMode(DT, INPUT);
+  pinMode(CLK, INPUT_PULLUP);
+  pinMode(DT, INPUT_PULLUP);
+  Serial.println("Rotary Encoder setup done...");
 
-  // Set up HC-SR04 sensor
+  // Set up HC-SR04 distance sensor
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
+  Serial.println("HC-SR04 sensor setup done...");
 
-  // Read initial state
+  // Read initial state of the rotary encoder
   previousStateCLK = digitalRead(CLK);
 
   // Initialize the RTC
+  if (! rtc.begin()) {
+    lcd.print("Couldn't find RTC");
+    while (1);
+  } else {
+    Serial.println("RTC Initialization done...");
+  }
+
+  // Set the RTC time to the compile time if RTC lost power
   if (rtc.lostPower()) {
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
 
   // Initialize the DHT sensor
   dht.begin();
+  Serial.println("DHT sensor initialization done...");
 
   // Initialize the MPU6050 sensor
   accelgyro.initialize();
+  Serial.println("MPU6050 sensor initialization done...");
 }
 
-
 void loop() {
+  // Process GPS data
   while (ss.available() > 0) {
     gps.encode(ss.read());
   }
 
+  // Check if rotary encoder has been moved
   currentStateCLK = digitalRead(CLK); // Reads the current state of CLK
 
   // If CLK changed from high to low (falling edge)
@@ -103,24 +119,22 @@ void loop() {
   previousStateCLK = currentStateCLK;  // Updates the previous state of CLK with the current state
 
   // Update the display every second even if the encoder has not been turned
-  if (millis() % 1000 == 0) {
+  if (millis() - lastUpdateTime >= 1000) {
     updateDisplay();
+    lastUpdateTime = millis();
   }
-}
 
-
-void updateDisplay() {
-  // Data update for MPU6050 sensor
+  // Calculate and store acceleration values, account for biases
   accelgyro.getAcceleration(&ax, &ay, &az);
   sumAx += ax / 16384.0 * 9.81;
   sumAy += ay / 16384.0 * 9.81;
   sumAz += az / 16384.0 * 9.81;
   samples++;
 
-  if (samples >= 10) {  // assuming loop() runs about 10 times per second
-    mpsAx = sumAx / samples;
-    mpsAy = sumAy / samples;
-    mpsAz = sumAz / samples;
+  if (samples >= 100) {  
+    mpsAx = (sumAx / samples) + 0.125;
+    mpsAy = (sumAy / samples) + 0.045;
+    mpsAz = (sumAz / samples) - 9.11;
 
     // reset sums and sample count
     sumAx = 0;
@@ -128,43 +142,38 @@ void updateDisplay() {
     sumAz = 0;
     samples = 0;
   }
+}
 
-  // Display updates based on the current screen
+void printLine(int line, const String& message) {
+  // Clear line on LCD and print new message
+  lcd.setCursor(0, line);
+  lcd.print(message);
+  for (int i = message.length(); i < 16; ++i) {
+    lcd.print(" ");
+  }
+}
+
+void updateDisplay() {
+  // Update the displayed data based on the current screen selection
+  String line1, line2;
+
   if (displayScreen == 0) {
     // Display date and time
     now = rtc.now();
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Date: ");
-    lcd.print(now.day(), DEC);
-    lcd.print('/');
-    lcd.print(now.month(), DEC);
-    lcd.print('/');
-    lcd.print(now.year(), DEC);
-    lcd.setCursor(0, 1);
-    lcd.print("Time: ");
-    lcd.print(now.hour(), DEC);
-    lcd.print(':');
-    lcd.print(now.minute(), DEC);
-    lcd.print(':');
-    lcd.print(now.second(), DEC);
+    line1 = "Date: " + String(now.day(), DEC) + "/" + String(now.month(), DEC) + "/" + String(now.year(), DEC);
+    line2 = "Time: " + String(now.hour(), DEC) + ":" + String(now.minute(), DEC) + ":" + String(now.second(), DEC);
+    Serial.println("Date and Time updated...");
 
   } else if (displayScreen == 1) {
     // Display humidity and temperature
     float h = dht.readHumidity();
     float t = dht.readTemperature();
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Temp: ");
-    lcd.print(t);
-    lcd.print("C");
-    lcd.setCursor(0, 1);
-    lcd.print("Humid: ");
-    lcd.print(h);
-    lcd.print("%");
+    line1 = "Temp: " + String(t) + "C";
+    line2 = "Humid: " + String(h) + "%";
+    Serial.println("Humidity and Temperature updated...");
 
   } else if (displayScreen == 2) {
-    // Display distance
+    // Display distance from HC-SR04 sensor
     long duration, distance;
     digitalWrite(TRIG_PIN, LOW);
     delayMicroseconds(2);
@@ -172,40 +181,28 @@ void updateDisplay() {
     delayMicroseconds(10);
     digitalWrite(TRIG_PIN, LOW);
     duration = pulseIn(ECHO_PIN, HIGH);
-    distance = (duration / 2) / 29.1; // Speed of sound wave travelling will be 340m/s = 29 us/cm. So, convert to cm.
-
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Distance: ");
-    lcd.print(distance);
-    lcd.print("cm");
+    distance = (duration / 2) / 29.1; // Convert duration to distance
+    line1 = "Distance: " + String(distance) + "cm";
+    Serial.println("Distance updated...");
 
   } else if (displayScreen == 3) {
-    // Display GPS location 
+    // Display GPS data
     if (gps.location.isValid()) {
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("Lat: ");
-      lcd.print(gps.location.lat(), 6);
-     lcd.setCursor(0, 1);
-      lcd.print("Lon: ");
-      lcd.print(gps.location.lng(), 6);
+      line1 = "Lat: " + String(gps.location.lat(), 6);
+      line2 = "Lon: " + String(gps.location.lng(), 6);
+      Serial.println("GPS location updated...");
     } else {
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("Awaiting GPS...");
-   } 
+      line1 = "Awaiting GPS...";
+      Serial.println("Waiting for GPS location...");
+    } 
 
   } else if (displayScreen == 4) { 
-    // Display acceleration
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Accel  X: ");
-    lcd.print(mpsAx);
-    lcd.setCursor(0, 1);
-    lcd.print("Y: ");
-    lcd.print(mpsAy);
-    lcd.print(" Z: ");
-    lcd.print(mpsAz);
+    // Display MPU6050 sensor data
+    line1 = "Accel  X: " + String(mpsAx);
+    line2 = "Y: " + String(mpsAy) + " Z: " + String(mpsAz);
+    Serial.println("Acceleration data updated...");
   }
-} 
+
+  printLine(0, line1);
+  printLine(1, line2);
+}
